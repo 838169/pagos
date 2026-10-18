@@ -89,4 +89,10 @@ final class PaymentRepository
         $statement->execute($orderId !== null ? [$orderId] : []);
         return $statement->fetchAll();
     }
+    public function awaitingDecision(): array
+    {
+        $rows = $this->pdo->query("SELECT pedido_id, cliente_id, total FROM pagos WHERE estado = 'PENDIENTE' ORDER BY id ASC LIMIT 100")->fetchAll();
+        $total = (int) $this->pdo->query("SELECT COUNT(*) FROM pagos WHERE estado = 'PENDIENTE'")->fetchColumn();
+        return ['rows' => $rows, 'total' => $total];
+    }
 }

@@ -15,7 +15,7 @@ pagos.cmd consume
 ```
 
 Deja el consumidor abierto. Entra a **http://localhost/grupoB_Pagos/**,
-abre **Historial**, selecciona un pedido PENDIENTE y pulsa **Pagar** o
+selecciona un pedido en **Pagos pendientes** (o en **Historial**) y pulsa **Pagar** o
 **Rechazar**. El motivo del rechazo puede modificarse (máximo 150 caracteres).
 El historial muestra los últimos 200 pagos; los anteriores se buscan por ID.
 
@@ -146,16 +146,56 @@ publiquen resultados. Un exchange no conserva mensajes para colas futuras.
 | Facturación | pago.aprobado | Registrar factura; no facturar rechazos |
 | Notificaciones | pago.aprobado y pago.rechazado | Informar ambos resultados |
 | Reportes | pago.aprobado y pago.rechazado | Registrar pagos y estadísticas |
-| Pedidos, según acuerdo del equipo | pago.aprobado y pago.rechazado | Actualizar su pedido |
+| Pedidos | pago.aprobado y pago.rechazado | Actualizar su pedido a PAGADO o CANCELADO |
 
 Los consumidores no deben competir por una misma cola si cada uno necesita
 su copia. Sus equipos implementan el procesamiento y el ACK después de guardar.
 No cambies nombres o campos unilateralmente (fases 1 y 2 del laboratorio).
 
-En la copia de Pedidos revisada no apareció un consumidor de resultados de
-Pagos. Deben confirmar con ese equipo su versión actual. Sus estados incluyen
-PAGADO y CANCELADO: proponer APROBADO -> PAGADO y acordar qué estado usar para
-RECHAZADO; no se ha impuesto ni implementado ese mapeo desde Pagos.
+La versión local de Pedidos revisada en `Downloads/Modulo pedidos` sí incluye
+`src/consumers/pagosConsumer.js`. Usa su cola `pedidos.resultado_pagos` y
+transforma APROBADO en PAGADO y RECHAZADO en CANCELADO. Su consumidor debe
+estar activo en el mismo broker/vhost. Mientras no haya decisión, Pagos
+conserva PENDIENTE y no emite un evento de resultado.
+
+### Conexión de Facturación
+
+```text
+Pagos -> pagos_exchange (topic) -> cola_facturacion -> consumidor de Facturación
+         routing key: pago.aprobado
+```
+
+Pagos publica el JSON en RabbitMQ; no necesita la dirección del computador de
+Facturación. Facturación declara su cola durable y la enlaza al exchange
+`pagos_exchange` con `pago.aprobado`, en el mismo servidor y vhost de Pagos.
+
+En el código de Facturación revisado, el binding usaba una clave vacía y el
+exchange se creaba como fanout si no existía. Su equipo debe cambiar el binding
+a `pago.aprobado` y declarar `pagos_exchange` como **topic**, durable. Estas
+opciones están en `app/consumer.py`: copiar el `.env` no corrige esos valores.
+No se debe borrar el exchange compartido ni cambiar `facturacion_exchange`.
+
+Variables de RabbitMQ que utiliza el `.env` de Facturación:
+
+```dotenv
+RABBITMQ_URL=amqps://USUARIO:CONTRASENA@SERVIDOR/VHOST
+RABBITMQ_EXCHANGE_PAGOS=pagos_exchange
+RABBITMQ_QUEUE=cola_facturacion
+RABBITMQ_EXCHANGE_FACTURACION=facturacion_exchange
+```
+
+Usar la conexión real del equipo sin publicarla. La configuración de MySQL
+corresponde a la base propia de Facturación, no a `db_pagos`. Las instrucciones
+completas, el `.env` de ejemplo, los cambios en Python y los comandos están en
+[Instrucciones_Facturacion.txt](Instrucciones_Facturacion.txt).
+
+Después del ajuste, reiniciar Facturación, comprobar el binding y su consumidor
+activo, y aprobar un **pedido nuevo**. Verificar la factura del mismo `pedidoId`
+en Facturación. Los eventos anteriores al binding correcto no se recuperan
+automáticamente; recargar un pago ya aprobado no vuelve a publicarlo.
+Su script `scripts/publicar_prueba.py` envía directamente a la cola, por lo
+que no comprueba el enlace desde Pagos. La integración real sigue pendiente
+de esa prueba conjunta; «Publicación confirmada» no demuestra que exista factura.
 
 ## 4. Persistencia y recuperación
 
@@ -316,3 +356,37 @@ no confirma que Facturación haya generado una factura. Además, la cola del
 observador cuenta como destino para RabbitMQ: puede haber publicación confirmada
 aunque todavía falte enlazar la cola de Facturación. Verifica el resultado en
 ese microservicio durante la prueba conjunta.
+
+## 9. Nombre del cliente por RPC
+
+En el detalle del pago se consulta al servicio Clientes con el clienteId que ya
+está guardado. El navegador solicita el nombre por separado para que la consulta
+no retrase ni bloquee los botones de decisión. No requiere Python ni otra consola.
+
+Se utiliza el mismo RABBITMQ_URL de Pagos, exchange predeterminado vacío, cola
+`cliente.consultar` y cuerpo `{"id":25}`. La respuesta debe conservar correlation_id
+y enviarse al reply_to temporal. Contrato: `{"status":200,"data":{"id":25,
+"primer_nombre":"Ana","primer_apellido":"Ortiz"}}`; también se admite `nombre`.
+Se unen primer/segundo nombre y primer/segundo apellido, y se verifica el ID.
+Una respuesta 404 muestra «Cliente no encontrado»; fallos de conexión, timeout o
+respuesta inválida muestran «Nombre no disponible». El ID sigue visible.
+
+Opciones en .env: CLIENT_RPC_QUEUE (predeterminado cliente.consultar) y
+CLIENT_RPC_TIMEOUT (4 segundos de espera de respuesta, máximo 10). La conexión
+usa los tiempos AMQP ya configurados. La consulta ocurre una vez por carga del
+pedido en la página, sin guardar datos personales adicionales en la base de Pagos
+ni modificar el JSON de los eventos. Para volver a consultar, recarga la página.
+El equipo de Clientes debe mantener su worker RPC encendido en el mismo broker/vhost.
+
+## 10. Panel de pagos pendientes
+
+La pantalla Pago muestra a la derecha los pedidos con estado PENDIENTE, con
+ID de pedido, ID de cliente e importe. Pulsa un pedido para abrir sus detalles.
+La lista se consulta cada cinco segundos, se pausa en pestañas ocultas y muestra
+los 100 pendientes más antiguos y el total. Al decidir, el pedido sale de esta
+lista aunque su evento aún esté pendiente de publicación; permanece en Historial.
+En pantallas estrechas el panel se coloca debajo de la consulta o del detalle.
+
+Los archivos JavaScript y CSS llevan una versión automática para evitar que
+el navegador conserve una interfaz antigua. La consulta del nombre tiene un
+límite de espera visible de 15 segundos y no bloquea los botones de decisión.

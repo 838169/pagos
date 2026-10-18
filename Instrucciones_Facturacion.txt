@@ -1,0 +1,179 @@
+﻿INSTRUCCIONES PARA CONECTAR FACTURACION CON PAGOS
+
+Problema encontrado
+-------------------
+Pagos publica en pagos_exchange, de tipo topic, con la routing key
+pago.aprobado. El codigo revisado de Facturacion enlaza su cola con una
+clave vacia y, si no existe el exchange, intenta crearlo como fanout.
+Por eso pueden funcionar sus pruebas directas a la cola y no llegar los
+mensajes publicados por Pagos.
+
+1. CONFIGURAR EL ARCHIVO .env DE FACTURACION
+
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=facturacion
+
+RABBITMQ_URL=amqps://USUARIO:CONTRASENA@SERVIDOR/VHOST
+RABBITMQ_EXCHANGE_PAGOS=pagos_exchange
+RABBITMQ_QUEUE=cola_facturacion
+RABBITMQ_EXCHANGE_FACTURACION=facturacion_exchange
+
+CLIENTES_URL=http://localhost:8000
+
+IMPORTANTE:
+- Reemplazar RABBITMQ_URL por la misma URL real del equipo que usa Pagos.
+  Debe coincidir el servidor y el vhost. Este TXT no incluye credenciales.
+- DB_HOST, DB_PORT, DB_USER y DB_PASSWORD corresponden al MySQL de Facturacion.
+  La base propia es facturacion, NO db_pagos.
+- En Windows no definir DB_SOCKET.
+- CLIENTES_URL debe ser la direccion real del servicio HTTP de Clientes.
+  localhost solo es correcto si Clientes corre en ese mismo computador.
+  El codigo consulta POST /cliente. Si Clientes no responde, la factura
+  puede generarse igualmente, sin nombre ni correo.
+- El codigo actual utiliza RABBITMQ_QUEUE. No utiliza
+  RABBITMQ_QUEUE_PAGOS ni variables de routing key o tipo de exchange.
+- No subir el .env con credenciales a GitHub.
+
+2. CORREGIR app/consumer.py
+
+A. Dentro de _conectar(), reemplazar el queue_bind existente por:
+
+        self._canal.queue_bind(
+            queue=QUEUE,
+            exchange=EXCHANGE_PAGOS,
+            routing_key="pago.aprobado",
+        )
+
+B. Reemplazar COMPLETO el metodo _asegurar_exchange_pagos() por:
+
+    def _asegurar_exchange_pagos(self):
+        self._canal.exchange_declare(
+            exchange=EXCHANGE_PAGOS,
+            exchange_type="topic",
+            durable=True,
+        )
+
+Respetar la indentacion de Python: el metodo pertenece a la clase Consumer.
+No conservar el bloque anterior que creaba pagos_exchange como fanout.
+
+NO eliminar ni recrear el exchange compartido en RabbitMQ.
+NO cambiar facturacion_exchange: su salida puede continuar siendo fanout.
+NO consumir la cola de Pagos ni la de Pedidos: usar cola_facturacion.
+Si aparece PRECONDITION_FAILED por un tipo distinto, detenerse y coordinar
+con Pagos; no borrar recursos compartidos para resolverlo.
+
+3. ARRANCAR FACTURACION
+
+- Encender su MySQL y comprobar que existe la base facturacion y la tabla
+  Factura. En una instalacion nueva, importar sql/schema.sql.
+- En CMD, ubicarse en la carpeta grupoK_Facturacion.
+- Si aun no tienen entorno/dependencias, ejecutar una vez:
+
+python -m venv .venv
+call .venv\Scripts\activate.bat
+python -m pip install -r requirements.txt
+
+- Si el entorno ya existe, solo activarlo:
+
+call .venv\Scripts\activate.bat
+
+- Detener la instancia anterior con Ctrl+C y arrancar:
+
+python -m uvicorn app.main:app --port 8007
+
+No abrir una segunda instancia sobre el mismo puerto.
+
+4. VERIFICAR RABBITMQ ANTES DE APROBAR UN PAGO
+
+En el panel del mismo broker/vhost comprobar:
+
+Exchange de entrada: pagos_exchange
+Tipo: topic
+Durable: true
+Cola: cola_facturacion
+Cola durable: true
+Binding desde pagos_exchange: pago.aprobado
+Consumidores activos en la cola: al menos uno
+
+Si queda un binding vacio antiguo, no sustituye a pago.aprobado.
+El consumidor corregido agrega el binding correcto al arrancar.
+
+En la consola de Facturacion debe aparecer un mensaje similar a:
+
+Escuchando 'cola_facturacion' (enlazada a 'pagos_exchange')
+
+Tambien consultar:
+http://localhost:8007/health
+
+Debe indicar base de datos y RabbitMQ disponibles. Un estado de conexion
+correcto por si solo no demuestra que el binding sea correcto.
+
+5. PROBAR EL FLUJO REAL
+
+1) Mantener Facturacion encendida y su cola enlazada.
+2) Crear un pedido NUEVO desde el microservicio de Pedidos.
+3) En Pagos abrir ese pedido y pulsar Pagar.
+4) Confirmar recepcion en la consola de Facturacion.
+5) Abrir http://localhost:8007 y comprobar la factura del mismo pedidoId.
+6) Tambien pueden consultar, reemplazando ID por el pedido real:
+
+http://localhost:8007/api/facturas/pedido/ID
+
+7) Crear otro pedido y rechazarlo: NO debe generarse factura para ese pedido.
+
+Los eventos publicados antes de existir el binding correcto no aparecen
+retroactivamente en la cola. No basta con recargar un pago ya aprobado:
+para esta comprobacion utilizar un pedido nuevo.
+
+El script scripts/publicar_prueba.py publica directamente en cola_facturacion.
+Sirve para probar Facturacion, pero NO valida el enlace desde Pagos porque
+no pasa por pagos_exchange.
+
+6. JSON QUE PUBLICA PAGOS
+
+Ejemplo ilustrativo; los IDs, importe y fecha cambian en cada pago:
+
+{
+  "evento": "PagoAprobado",
+  "pedidoId": 1019,
+  "clienteId": 5,
+  "pagoId": 8,
+  "total": 195000,
+  "estado": "APROBADO",
+  "fecha": "2026-10-14T00:30:00Z"
+}
+
+Propiedades: content_type=application/json, mensaje persistente y
+message_id=pagos:<pagoId>.
+
+Este JSON es compatible con la validacion revisada de Facturacion.
+No incluye productos ni nombre del cliente. Facturacion admite productos
+omitidos y genera el PDF con el total; consulta al cliente por separado.
+Tras guardar la factura, Facturacion publica FacturaGenerada en
+facturacion_exchange y confirma el mensaje recibido con ACK.
+
+7. SI TODAVIA NO LLEGA
+
+Compartir con Pagos, sin contrasenas:
+- El error exacto de la consola de Facturacion.
+- Una captura del tipo de pagos_exchange y del binding pago.aprobado.
+- El numero de consumidores y mensajes de cola_facturacion.
+- El pedidoId de la prueba y la hora de aprobacion.
+- La respuesta de /health.
+
+Publicacion confirmada en Pagos NO significa que Facturacion haya procesado
+el evento: otra cola, incluida la de observacion, puede recibirlo.
+La comprobacion final es encontrar la factura del mismo pedidoId.
+
+Fuentes revisadas
+-----------------
+https://github.com/Jhohan26/E-commerce/blob/main/grupoK_Facturacion/app/consumer.py
+https://github.com/Jhohan26/E-commerce/blob/main/grupoK_Facturacion/.env.example
+https://github.com/Jhohan26/E-commerce/blob/main/grupoK_Facturacion/app/facturacion.py
+https://github.com/Jhohan26/E-commerce/blob/main/grupoK_Facturacion/README.md
+
+Este archivo contiene instrucciones para el equipo de Facturacion.
+No se realizaron cambios en GitHub ni en su microservicio.

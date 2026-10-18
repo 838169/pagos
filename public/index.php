@@ -27,5 +27,12 @@ pageStart('payment', 'Pago');
 ?>
 <section class="page-heading"><h1>Pago</h1><p>Consulta un pedido recibido y selecciona Pagar o Rechazar.</p></section>
 <div class="payment-grid"><div class="payment-sidebar"><section class="card lookup-card"><div class="card-heading"><h2>Consultar pedido</h2><p>Ingresa el identificador de tu pedido.</p></div><form method="get" class="lookup-form"><label for="lookup-order">Pedido ID</label><input id="lookup-order" name="pedidoId" type="number" min="1" max="2147483647" value="<?= h($query) ?>" required placeholder="Número de pedido"><button type="submit" class="button full-width">Consultar pago <span aria-hidden="true">→</span></button></form></section>
-</div><div class="result-column"><div id="result-container" data-pedido="<?= h($query) ?>"><?php require __DIR__ . '/_result.php'; ?></div><p id="poll-status" class="poll-status" aria-live="polite"></p></div></div>
+</div><div class="result-column"><div id="result-container" data-pedido="<?= h($query) ?>"><?php require __DIR__ . '/_result.php'; ?></div><p id="poll-status" class="poll-status" aria-live="polite"></p></div>
+<aside class="card pending-panel" aria-labelledby="pending-title">
+    <div class="pending-heading"><h2 id="pending-title">Pagos pendientes</h2><span id="pending-count" class="badge">—</span></div>
+    <p class="pending-description">Selecciona un pedido para pagar o rechazar.</p>
+    <div id="pending-list"><p class="pending-empty">Cargando pendientes…</p></div>
+    <p id="pending-status" class="pending-status" role="status"></p>
+    <noscript><p>Activa JavaScript para ver los pendientes aquí o consulta el historial.</p></noscript>
+</aside></div>
 <?php pageEnd(true); ?>

@@ -62,4 +62,9 @@ verify($event['evento'] === 'PagoRechazado' && $event['motivo'] === 'Rechazo man
 $pending = $repository->register(new Order(903, 25, '1.00'));
 raises(fn() => PaymentEvent::fromRow($pending), RuntimeException::class, 'pendiente nunca se convierte en evento de resultado');
 verify($repository->pending(100) === [(int) $rejected['id']], 'recuperacion distingue pendiente manual de envio pendiente');
+$awaiting = $repository->awaitingDecision();
+verify($awaiting['total'] === 1 && count($awaiting['rows']) === 1 && (int) $awaiting['rows'][0]['pedido_id'] === 903,
+    'panel lateral incluye solo pendientes y excluye aprobados y rechazados sin publicar');
+$repository->decide(903, 'APROBADO');
+verify($repository->awaitingDecision() === ['rows' => [], 'total' => 0], 'pedido resuelto desaparece del panel de pendientes');
 echo "$checks comprobaciones correctas con MySQL; tabla temporal y sin RabbitMQ.\n";
